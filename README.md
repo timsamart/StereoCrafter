@@ -113,7 +113,7 @@ Arguments:
 
 The first step generates a video grid with input video, visualized depth map, occlusion mask, and splatting right video, as shown below:
 
-<img src="assets/camel_splatting_results.jpg" alt="camel_splatting_results" width="1000"/> 
+<img src="assets/camel_splatting_results.jpg" alt="camel_splatting_results" width="800"/> 
 
 #### 2. Stereo Video Inpainting of the Splatting Video
 Execute the following command:
@@ -128,9 +128,11 @@ Arguments:
 - `--save_dir`: Directory for the output stereo video (e.g., `./outputs`).
 - `--tile_num`: The number of tiles in width and height dimensions for tiled processing, which allows for handling high resolution input without requiring more GPU memory. The default value is `1` (1 $\times$ 1 tile). For input videos with a resolution of 2K or higher, you could use more tiles to avoid running out of memory.
 
-<img src="assets/camel_sbs.jpg" alt="camel_sbs" width="1000"/> 
+The stereo video inpainting generates the stereo video result in side-by-side format and anaglyph 3D format, as shown below:
 
-<img src="assets/camel_anaglyph.jpg" alt="camel_anaglyph" width="500"/>
+<img src="assets/camel_sbs.jpg" alt="camel_sbs" width="800"/> 
+
+<img src="assets/camel_anaglyph.jpg" alt="camel_anaglyph" width="400"/>
 
 ## 🤝 Acknowledgements
 
