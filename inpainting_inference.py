@@ -1,11 +1,10 @@
 import os
-
+import cv2
 import numpy as np
 from fire import Fire
 from decord import VideoReader, cpu
 
 import torch
-from torchvision.io import write_video
 
 from transformers import CLIPVisionModelWithProjection
 from diffusers import (
@@ -119,6 +118,25 @@ def spatial_tiled_process(
         pixels.append(torch.cat(rows, dim=3))
     x = torch.cat(pixels, dim=2)
     return x
+
+
+def write_video_opencv(input_frames, fps, output_video_path):
+
+    num_frames = len(input_frames)
+    height, width, _ = input_frames[0].shape
+
+    out = cv2.VideoWriter(
+        output_video_path, 
+        cv2.VideoWriter_fourcc(*"mp4v"),
+        fps, 
+        (width, height)
+    )
+
+    for i in range(num_frames):
+        out.write(input_frames[i, :, :, ::-1])
+
+    out.release()
+
 
 
 def main(
@@ -256,35 +274,11 @@ def main(
 
     frames_output = torch.cat(results, dim=0).cpu()
 
-    '''
-    video_mask = frames_mask.repeat(1, 3, 1, 1)
-    top = torch.cat([frames_left, frames_warpped], dim=3)
-    bottom = torch.cat([video_mask, frames_output], dim=3)
-
-    frames_all = torch.cat([top, bottom], dim=2)
-    frames_all_path = os.path.join(save_dir, f"{video_name}.mp4")
-    os.makedirs(os.path.dirname(frames_all_path), exist_ok=True)
-
-    frames_all = (frames_all * 255).permute(0, 2, 3, 1).to(dtype=torch.uint8).cpu()
-    write_video(
-        frames_all_path,
-        frames_all,
-        fps=fps,
-        video_codec="h264",
-        options={"crf": "16"},
-    )
-    '''
 
     frames_sbs = torch.cat([frames_left, frames_output], dim=3)
     frames_sbs_path = os.path.join(save_dir, f"{video_name}_sbs.mp4")
-    frames_sbs = ((frames_sbs * 255).permute(0, 2, 3, 1).to(dtype=torch.uint8).cpu())
-    write_video(
-        frames_sbs_path,
-        frames_sbs,
-        fps=fps,
-        video_codec="h264",
-        options={"crf": "16"},
-    )
+    frames_sbs = (frames_sbs * 255).permute(0, 2, 3, 1).to(dtype=torch.uint8).cpu().numpy()
+    write_video_opencv(frames_sbs, fps, frames_sbs_path)
 
 
     vid_left = (frames_left * 255).permute(0, 2, 3, 1).to(dtype=torch.uint8).cpu().numpy()
@@ -296,13 +290,7 @@ def main(
 
     vid_anaglyph = vid_left + vid_right
     vid_anaglyph_path = os.path.join(save_dir, f"{video_name}_anaglyph.mp4")
-    write_video(
-        vid_anaglyph_path,
-        vid_anaglyph,
-        fps=fps,
-        video_codec="h264",
-        options={"crf": "16"},
-    )
+    write_video_opencv(vid_anaglyph, fps, vid_anaglyph_path)
 
 
 if __name__ == "__main__":

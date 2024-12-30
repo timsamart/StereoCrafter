@@ -1,4 +1,5 @@
 import gc
+import cv2
 import os
 import numpy as np
 import torch
@@ -12,9 +13,44 @@ from decord import VideoReader, cpu
 
 from dependency.DepthCrafter.depthcrafter.depth_crafter_ppl import DepthCrafterPipeline
 from dependency.DepthCrafter.depthcrafter.unet import DiffusersUNetSpatioTemporalConditionModelDepthCrafter
-from dependency.DepthCrafter.depthcrafter.utils import vis_sequence_depth, read_video_frames
+from dependency.DepthCrafter.depthcrafter.utils import vis_sequence_depth
 
 from Forward_Warp import forward_warp
+
+
+def read_video_frames(video_path, process_length, target_fps, max_res, dataset="open"):
+    if dataset == "open":
+        print("==> processing video: ", video_path)
+        vid = VideoReader(video_path, ctx=cpu(0))
+        print("==> original video shape: ", (len(vid), *vid.get_batch([0]).shape[1:]))
+        original_height, original_width = vid.get_batch([0]).shape[1:3]
+        height = round(original_height / 64) * 64
+        width = round(original_width / 64) * 64
+        if max(height, width) > max_res:
+            scale = max_res / max(original_height, original_width)
+            height = round(original_height * scale / 64) * 64
+            width = round(original_width * scale / 64) * 64
+    else:
+        height = dataset_res_dict[dataset][0]
+        width = dataset_res_dict[dataset][1]
+
+    vid = VideoReader(video_path, ctx=cpu(0), width=width, height=height)
+
+    fps = vid.get_avg_fps() if target_fps == -1 else target_fps
+    stride = round(vid.get_avg_fps() / fps)
+    stride = max(stride, 1)
+    frames_idx = list(range(0, len(vid), stride))
+    print(
+        f"==> downsampled shape: {len(frames_idx), *vid.get_batch([0]).shape[1:]}, with stride: {stride}"
+    )
+    if process_length != -1 and process_length < len(frames_idx):
+        frames_idx = frames_idx[:process_length]
+    print(
+        f"==> final processing shape: {len(frames_idx), *vid.get_batch([0]).shape[1:]}"
+    )
+    frames = vid.get_batch(frames_idx).asnumpy().astype("float32") / 255.0
+
+    return frames, fps, original_height, original_width
 
 
 class DepthCrafterDemo:
@@ -109,7 +145,6 @@ class DepthCrafterDemo:
         # visualize the depth map and save the results
         vis = vis_sequence_depth(res)
         # save the depth map and visualization with the target FPS
-
         save_path = os.path.join(
             os.path.dirname(output_video_path), os.path.splitext(os.path.basename(output_video_path))[0]
         )
@@ -161,13 +196,88 @@ class ForwardWarpStereo(nn.Module):
             return res, occlu_map
         
 
+def DepthSplatting(
+        input_video_path, 
+        output_video_path, 
+        video_depth, 
+        depth_vis, 
+        max_disp, 
+        process_length, 
+        batch_size):
+    '''
+    Depth-Based Video Splatting Using the Video Depth.
+    Args:
+        input_video_path: Path to the input video.
+        output_video_path: Path to the output video.
+        video_depth: Video depth with shape of [T, H, W] in [0, 1].
+        depth_vis: Visualized video depth with shape of [T, H, W, 3] in [0, 1].
+        process_length: The length of video to process.
+        batch_size: The batch size for splatting to save GPU memory. 
+    '''
+    vid_reader = VideoReader(input_video_path, ctx=cpu(0))
+    original_fps = vid_reader.get_avg_fps()
+    input_frames = vid_reader[:].asnumpy() / 255.0
+
+    if process_length != -1 and process_length < len(input_frames):
+        input_frames = input_frames[:process_length]
+        video_depth = video_depth[:process_length]
+        depth_vis = depth_vis[:process_length]
+
+    stereo_projector = ForwardWarpStereo(occlu_map=True).cuda()
+
+    num_frames = len(input_frames)
+    height, width, _ = input_frames[0].shape
+
+    # Initialize OpenCV VideoWriter
+    out = cv2.VideoWriter(
+        output_video_path, 
+        cv2.VideoWriter_fourcc(*"mp4v"),
+        original_fps, 
+        (width * 2, height * 2)
+    )
+
+    for i in range(0, num_frames, batch_size):
+        batch_frames = input_frames[i:i+batch_size]
+        batch_depth = video_depth[i:i+batch_size]
+        batch_depth_vis = depth_vis[i:i+batch_size]
+
+        left_video = torch.from_numpy(batch_frames).permute(0, 3, 1, 2).float().cuda()
+        disp_map = torch.from_numpy(batch_depth).unsqueeze(1).float().cuda()
+
+        disp_map = disp_map * 2.0 - 1.0
+        disp_map = disp_map * max_disp
+
+        with torch.no_grad():
+            right_video, occlusion_mask = stereo_projector(left_video, disp_map)
+
+        right_video = right_video.cpu().permute(0, 2, 3, 1).numpy()
+        occlusion_mask = occlusion_mask.cpu().permute(0, 2, 3, 1).numpy().repeat(3, axis=-1)
+
+        for j in range(len(batch_frames)):
+            video_grid_top = np.concatenate([batch_frames[j], batch_depth_vis[j]], axis=1)
+            video_grid_bottom = np.concatenate([occlusion_mask[j], right_video[j]], axis=1)
+            video_grid = np.concatenate([video_grid_top, video_grid_bottom], axis=0)
+
+            video_grid_uint8 = np.clip(video_grid * 255.0, 0, 255).astype(np.uint8)
+            video_grid_bgr = cv2.cvtColor(video_grid_uint8, cv2.COLOR_RGB2BGR)
+            out.write(video_grid_bgr)
+
+        # Free up GPU memory
+        del left_video, disp_map, right_video, occlusion_mask
+        torch.cuda.empty_cache()
+        gc.collect()
+
+    out.release()
+
+
 def main(
     input_video_path: str,
     output_video_path: str,
     unet_path: str,
     pre_trained_path: str,
     max_disp: float = 20.0,
-    process_length = -1
+    process_length = -1,
+    batch_size = 10
 ):
     depthcrafter_demo = DepthCrafterDemo(
         unet_path=unet_path,
@@ -177,34 +287,18 @@ def main(
     video_depth, depth_vis = depthcrafter_demo.infer(
         input_video_path,
         output_video_path,
-        process_length,
+        process_length
     )
 
-    vid_reader = VideoReader(input_video_path, ctx=cpu(0))
-    original_fps = vid_reader.get_avg_fps()
-    input_frames = vid_reader[:].asnumpy() / 255.0
-
-    if process_length != -1 and process_length < len(input_frames):
-        input_frames = input_frames[:process_length]
-
-    stereo_projector = ForwardWarpStereo(occlu_map=True).cuda()
-
-    left_video = torch.tensor(input_frames).permute(0, 3, 1, 2).float().contiguous().cuda()
-    disp_map   = torch.tensor(video_depth).unsqueeze(1).float().contiguous().cuda()
-
-    disp_map = disp_map * 2.0 - 1.0
-    disp_map = disp_map * max_disp
-
-    right_video, occlusion_mask = stereo_projector(left_video, disp_map)
-
-    right_video = right_video.cpu().permute(0, 2, 3, 1).numpy()
-    occlusion_mask = occlusion_mask.cpu().permute(0, 2, 3, 1).numpy().repeat(3, axis=-1)
-
-    video_grid_top = np.concatenate([input_frames, depth_vis], axis=2)
-    video_grid_bottom = np.concatenate([occlusion_mask, right_video], axis=2)
-    video_grid = np.concatenate([video_grid_top, video_grid_bottom], axis=1)
-
-    write_video(output_video_path, video_grid*255.0, fps=original_fps, video_codec="h264", options={"crf": "16"})
+    DepthSplatting(
+        input_video_path, 
+        output_video_path, 
+        video_depth, 
+        depth_vis,
+        max_disp,
+        process_length, 
+        batch_size
+    )
 
 
 if __name__ == "__main__":
