@@ -10,3 +10,4 @@ xformers==0.0.20
 av==12.3.0
 matplotlib==3.7.5
 mediapy==1.2.2
+opencv-python==4.10.0.84
