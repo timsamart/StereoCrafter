@@ -46,7 +46,8 @@ You can use Anaconda or Docker to build this basic environment.
 
 #### 2. Clone the repo
 ```bash
-git clone https://github.com/TencentARC/StereoCrafter
+# use --recursive to clone the dependent submodules
+git clone --recursive https://github.com/TencentARC/StereoCrafter
 cd StereoCrafter
 ```
 
