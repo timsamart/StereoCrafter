@@ -1,6 +1,6 @@
 torch==2.0.1
 torchvision==0.15.2
-fire==0.5.0
+fire==0.7.0
 accelerate==1.0.1
 safetensors==0.4.3
 transformers==4.42.3
